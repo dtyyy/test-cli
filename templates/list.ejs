@@ -1,0 +1,218 @@
+import React, { useEffect, useState } from 'react';
+import { Button, Space, message } from 'antd';
+import { ConditionPanel, Table } from '@pupu/brick';
+import { useCacheState, useObjectState } from '@pupu/phooks';
+import TaskConditionPanel from 'containers/Tasks/TaskList/components/TaskConditionPanel';
+import { TaskFilterTime } from 'containers/Tasks/TaskList/components/TimeUnionPicker';
+import useTaskTableData from 'containers/Tasks/TaskList/hooks/useTaskTableData';
+import { DEFAULT_IM_SELECTED_COLUMNS_KEYS, QuerySource, TaskMenuMap, TaskMenuType, TaskCodeType, RelationType } from 'containers/Tasks/constants';
+import type { UnionQueryType } from 'containers/Tasks/types';
+import type { TaskListItem, TaskListParams } from 'types/task/tasks';
+import { imBasicColumns } from 'containers/Tasks/utils';
+import { CloseOutlined } from '@ant-design/icons';
+import TaskCreateDrawer from 'containers/Tasks/TaskList/components/TaskCreateDrawer';
+import classNames from 'classnames';
+import dayjs from 'dayjs';
+import { getCauthUserDetail } from 'service/cauth/user';
+import TaskTabs from './components/Tabs';
+import styles from './index.module.less';
+import TaskWorkbenchDetail from '../Detail';
+
+const DEFAULT_NUMBER_TYPE = '订单号';
+const DEFAULT_PEOPLE_TYPE = '更新人';
+export interface ISubmoduleRefSimpleInfo {
+  /** 实体ID，例如聊天会话ID、呼叫ID、工单ID，唯一标识 */
+  refId: string;
+  /** 用户ID（C端用户ID） */
+  userId?: string;
+  /** 用户头像 */
+  avatar?: string;
+  /** 用户昵称 */
+  nickname?: string;
+}
+const initParams = {
+  time_from: dayjs().subtract(6, 'days').startOf('day').valueOf(),
+  time_to: dayjs().endOf('day').valueOf(),
+};
+
+interface DockOption {
+  /** 如果存在 dockCode，则会同时以 dockCode 和 dockProps 更新对接页 */
+  dockCode: string;
+  dockProps?: Record<string, any>;
+}
+
+interface TaskWorkbenchListProps {
+  /** 子模块 Code；聊天：chat，呼叫：call，工单：task */
+  selectSubmoduleRef: (submoduleCode: string, submoduleRef?: ISubmoduleRefSimpleInfo & Record<string, any>, options?: DockOption) => void;
+}
+
+const TaskWorkbenchList = ({ selectSubmoduleRef }: TaskWorkbenchListProps) => {
+  const [detailId, setDetailId] = useState<string>(); // 详情快捷入口id
+  const [params, updateParams, { reset: paramsReset }] = useCacheState<TaskListParams>(initParams);
+  // 联合筛选的默认类别
+  const [unionQueryType, updateUnionQueryType, { reset: unionQueryTypeReset }] = useObjectState<UnionQueryType>({
+    number: DEFAULT_NUMBER_TYPE,
+    people: DEFAULT_PEOPLE_TYPE,
+    time: TaskFilterTime.TimeCreate,
+  });
+  const [selectedMenuType, setSelectedMenuType] = useState<TaskMenuType>(TaskMenuType.MyProcessing); // 左侧快捷状态栏state
+  const [collapseStatus, setCollapseStatus] = useState(true);
+  const [editVisible, setEditVisible] = useState(false);
+
+  const [selectedColumns, renderTableTags] = Table.useColumnSelection<TaskListItem>(imBasicColumns, {
+    defaultSelectedColumnKeys: DEFAULT_IM_SELECTED_COLUMNS_KEYS,
+    selectAll: false,
+    expandable: true,
+  });
+
+  const { tableFresh, tableProps, pagination, tableLoading } = useTaskTableData({
+    selectedMenuType,
+    params,
+    unionQueryType,
+  });
+
+  useEffect(() => {
+    tableFresh({ page: 1, size: 15 }, { manual_fresh: true });
+  }, [selectedMenuType]);
+
+  const handleTableFresh = () => {
+    setDetailId(undefined);
+    selectSubmoduleRef?.('task');
+    tableFresh({ page: 1, size: 15 }, { manual_fresh: true });
+  };
+
+  const conditionParamsReset = () => {
+    paramsReset();
+    unionQueryTypeReset();
+  };
+
+  const onTaskTabChange = (key: TaskMenuType) => {
+    setSelectedMenuType(key);
+    updateParams({ status: TaskMenuMap?.[key]?.status as string });
+  };
+
+  const handleRowClick = async (record: TaskListItem) => {
+    setDetailId(record.id);
+
+    const taskInfo = { taskId: record?.id, taskCode: record?.task_code };
+
+    Promise.resolve()
+      .then(() => {
+        if (record?.buyer_id) {
+          return getCauthUserDetail(record?.buyer_id);
+        }
+      })
+      .then(res => {
+        const cUserDetail = res;
+        const dockOptionsMap: Record<number, DockOption> = {
+          [RelationType.ORDER]: { dockCode: 'order', dockProps: { taskInfo, queries: { orderId: record?.order_id, orderNum: record?.order_num } } },
+          [RelationType.AFTER_SALE]: { dockCode: 'after-sales', dockProps: { taskInfo, queries: { groupNum: record?.service_num } } },
+          [RelationType.USER]: { dockCode: 'order', dockProps: { taskInfo } },
+          [RelationType.SELF_SERVICE_AFTER_SALE]: {
+            dockCode: 'after-sales',
+            dockProps: { taskInfo, queries: { afterSalesNum: record?.after_sale_num } },
+          },
+        };
+        const submoduleRef = {
+          refId: record?.id,
+          userId: record?.buyer_id,
+          avatar: cUserDetail?.avatar,
+          nickname: cUserDetail?.nick_name,
+        };
+        selectSubmoduleRef?.('task', submoduleRef, dockOptionsMap[record.relation_type]);
+        // console.info('submoduleRef', submoduleRef, 'dockOptionsMap', dockOptionsMap);
+      });
+  };
+
+  return (
+    <div className={styles.wrap}>
+      <TaskConditionPanel
+        params={params}
+        updateParams={updateParams}
+        unionQueryType={unionQueryType}
+        updateUnionQueryType={updateUnionQueryType}
+        collapseStatus={collapseStatus}
+        onCollapseStatusChange={isCollapse => setCollapseStatus(isCollapse)}
+        source={QuerySource.IM}
+        wrapClassName={styles['wrap-panel']}
+      >
+        <ConditionPanel.Item type="end">
+          <Space>
+            <Button loading={tableLoading} type="primary" onClick={handleTableFresh}>
+              查询
+            </Button>
+            <Button onClick={() => conditionParamsReset()}>重置</Button>
+          </Space>
+        </ConditionPanel.Item>
+      </TaskConditionPanel>
+      <div className={styles.content}>
+        <TaskTabs onChange={onTaskTabChange} activeTab={selectedMenuType} currentCount={tableLoading ? undefined : tableProps.pagination.total}>
+          <Button type="primary" ghost onClick={() => setEditVisible(true)}>
+            新建工单
+          </Button>
+        </TaskTabs>
+        <div className={classNames(styles['table-wrap'])}>
+          <div className="px-24" style={{ width: detailId ? '300px' : '100%' }}>
+            <div className={classNames(styles.table)}>
+              <div className="py-6">{renderTableTags()}</div>
+              <Table
+                {...tableProps}
+                loading={tableLoading}
+                columns={selectedColumns}
+                onRow={record => ({ onClick: () => handleRowClick(record) })}
+                rowClassName={record => (record.id === detailId ? 'row-clickable' : '')}
+                pagination={{ ...tableProps.pagination, showQuickJumper: true, showSizeChanger: true, pageSizeOptions: [10, 15, 20, 50, 100] }}
+              />
+            </div>
+          </div>
+          {detailId && (
+            <div
+              style={{
+                flex: 1,
+                minWidth: 1,
+                overflowY: 'scroll',
+                overflowX: 'hidden',
+                borderLeft: '1px solid #f0f0f0',
+                position: 'relative',
+                background: '#f3f3f3',
+              }}
+            >
+              <CloseOutlined
+                className={styles['close-icon']}
+                onClick={() => {
+                  setDetailId(undefined);
+                  selectSubmoduleRef?.('task');
+                }}
+              />
+              <TaskWorkbenchDetail
+                key={detailId}
+                id={detailId}
+                crumbs={false}
+                backUrl={false}
+                requestTaskList={() => tableFresh({ page: pagination.current, size: pagination.pageSize })}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+      {editVisible && (
+        <TaskCreateDrawer
+          width={640}
+          visible={editVisible}
+          sourceType={TaskCodeType.IMTaskWorkbench}
+          onClose={() => setEditVisible(false)}
+          drawProps={{ className: classNames(styles.drawer, { [styles['drawer-open']]: editVisible }) }}
+          onConfirm={() => {
+            setEditVisible(false);
+            message.success('创建成功');
+            setTimeout(() => {
+              handleTableFresh();
+            }, 1000);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+export default TaskWorkbenchList;
